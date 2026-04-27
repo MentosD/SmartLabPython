@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Lab Conference</title>
+    <script src="AgoraRTC_N-4.20.0.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #1a1a1a; font-family: "Segoe UI", sans-serif; color: white; overflow: hidden; }
+        #meeting-container { display: flex; flex-direction: column; height: 100vh; }
+        #video-grid { flex: 1; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px; padding: 20px; align-content: center; }
+        .video-card { background: #2a2a2a; border-radius: 12px; overflow: hidden; position: relative; aspect-ratio: 16/9; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        .video-card .user-name { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.5); padding: 4px 10px; border-radius: 4px; font-size: 12px; z-index: 10; }
+        .video-player { width: 100%; height: 100%; object-fit: cover; }
+        #controls { height: 80px; background: #222; display: flex; align-items: center; justify-content: center; gap: 20px; border-top: 1px solid #333; }
+        .btn { width: 50px; height: 50px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 20px; transition: 0.3s; }
+        .btn-mute { background: #3c3c3c; color: white; }
+        .btn-mute.active { background: #ea4335; }
+        .btn-video { background: #3c3c3c; color: white; }
+        .btn-video.active { background: #ea4335; }
+        .btn-screen { background: #3c3c3c; color: white; }
+        .btn-screen.active { background: #27AE60; }
+        .btn-leave { background: #ea4335; color: white; width: 100px; border-radius: 25px; font-size: 14px; font-weight: bold; }
+        .btn:hover { opacity: 0.8; transform: scale(1.05); }
+        #status-bar { position: absolute; top: 10px; right: 10px; font-size: 12px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <div id="meeting-container">
+        <div id="video-grid"></div>
+        <div id="controls">
+            <button id="mute-btn" class="btn btn-mute" title="静音/取消静音">🎤</button>
+            <button id="video-btn" class="btn btn-video" title="开启/关闭摄像头">📷</button>
+            <button id="screen-btn" class="btn btn-screen" title="共享屏幕">🖥️</button>
+        </div>
+    </div>
+    <div id="status-bar">检测 SDK 状态...</div>
+
+    <script>
+        let client = null;
+        let localTracks = { videoTrack: null, audioTrack: null };
+        let screenTrack = null;
+        let remoteUsers = {};
+        let isMuted = false;
+        let isVideoOff = false;
+        let isSharingScreen = false;
+        let myUid = null;
+        let myName = "";
+
+        AgoraRTC.setLogLevel(0); 
+
+        function initAgora() {
+            if (typeof AgoraRTC !== 'undefined') {
+                document.getElementById('status-bar').innerText = "✅ SDK 已就绪";
+            }
+        }
+
+        async function join(appId, channel, token, uid, username) {
+            if (client && (client.connectionState === "CONNECTED" || client.connectionState === "CONNECTING")) {
+                console.warn("LOG: 频道连接中，忽略重复加入");
+                return;
+            }
+            
+            myUid = uid; myName = username;
+            try {
+                if (!client) client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+                
+                await client.join(appId, channel, token, uid);
+                console.log("LOG: 成功加入频道");
+                document.getElementById('status-bar').innerText = `✅ 已连接 | 频道: ${channel}`;
+
+                client.on("user-published", handleUserPublished);
+                client.on("user-unpublished", handleUserUnpublished);
+
+                [localTracks.audioTrack, localTracks.videoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
+                await client.publish([localTracks.audioTrack, localTracks.videoTrack]);
+                
+                createVideoCard(uid, username + " (我)");
+                localTracks.videoTrack.play(`video-${uid}`);
+            } catch (e) {
+                console.error("LOG: 加入失败", e);
+                alert("加入失败: " + e.message);
+            }
+        }
+
+        document.getElementById('mute-btn').onclick = async () => {
+            if (!localTracks.audioTrack) return;
+            if (localTracks.audioTrack._isClosed) { console.error("轨道已关闭"); return; }
+            isMuted = !isMuted;
+            await localTracks.audioTrack.setEnabled(!isMuted);
+            document.getElementById('mute-btn').classList.toggle('active', isMuted);
+            document.getElementById('mute-btn').innerText = isMuted ? "🔇" : "🎤";
+        };
+
+        document.getElementById('video-btn').onclick = async () => {
+            if (!localTracks.videoTrack || isSharingScreen) return;
+            if (localTracks.videoTrack._isClosed) return;
+            isVideoOff = !isVideoOff;
+            await localTracks.videoTrack.setEnabled(!isVideoOff);
+            document.getElementById('video-btn').classList.toggle('active', isVideoOff);
+            document.getElementById('video-btn').innerText = isVideoOff ? "🚫" : "📷";
+        };
+
+        document.getElementById('screen-btn').onclick = () => toggleScreenShare();
+
+        async function toggleScreenShare() {
+            try {
+                if (!isSharingScreen) {
+                    if (localTracks.videoTrack) {
+                        await client.unpublish(localTracks.videoTrack);
+                        localTracks.videoTrack.stop();
+                        localTracks.videoTrack.close();
+                    }
+                    screenTrack = await AgoraRTC.createScreenVideoTrack();
+                    localTracks.videoTrack = screenTrack;
+                    await client.publish(localTracks.videoTrack);
+                    localTracks.videoTrack.play(`video-${myUid}`);
+                    isSharingScreen = true;
+                    document.getElementById('screen-btn').classList.add('active');
+                    screenTrack.on("track-ended", () => stopScreenShare());
+                } else {
+                    await stopScreenShare();
+                }
+            } catch (e) {
+                console.error("LOG: 屏幕共享异常", e);
+                alert("屏幕共享失败，请确认系统录屏权限已开启");
+            }
+        }
+
+        async function stopScreenShare() {
+            if (!isSharingScreen) return;
+            await client.unpublish(localTracks.videoTrack);
+            localTracks.videoTrack.stop();
+            localTracks.videoTrack.close();
+            localTracks.videoTrack = await AgoraRTC.createCameraVideoTrack();
+            await client.publish(localTracks.videoTrack);
+            localTracks.videoTrack.play(`video-${myUid}`);
+            isSharingScreen = false;
+            document.getElementById('screen-btn').classList.remove('active');
+        }
+
+        async function handleUserPublished(user, mediaType) {
+            await client.subscribe(user, mediaType);
+            if (mediaType === "video") {
+                createVideoCard(user.uid, `用户 ${user.uid}`);
+                user.videoTrack.play(`video-${user.uid}`);
+            }
+            if (mediaType === "audio") user.audioTrack.play();
+        }
+
+        function handleUserUnpublished(user, mediaType) {
+            if (mediaType === "video") {
+                const card = document.getElementById(`user-${user.uid}`);
+                if (card) card.remove();
+                delete remoteUsers[user.uid];
+            }
+        }
+
+        function createVideoCard(uid, name) {
+            const grid = document.getElementById('video-grid');
+            if (document.getElementById(`user-${uid}`)) return;
+            const card = document.createElement('div');
+            card.id = `user-${uid}`;
+            card.className = 'video-card';
+            card.innerHTML = `<div class="user-name">${name}</div><div id="video-${uid}" class="video-player"></div>`;
+            grid.appendChild(card);
+            remoteUsers[uid] = true;
+        }
+
+        async function leaveChannel() {
+            console.log("LOG: 执行退出频道逻辑");
+            if (!client) return;
+            for (let track in localTracks) { 
+                if (localTracks[track]) { 
+                    try {
+                        localTracks[track].stop(); 
+                        localTracks[track].close(); 
+                    } catch (e) { console.error("停止轨道失败", e); }
+                    localTracks[track] = null;
+                } 
+            }
+            await client.leave();
+            document.getElementById('video-grid').innerHTML = '';
+            document.getElementById('status-bar').innerText = '已离开会议';
+        }
+
+        window.onload = () => initAgora();
+    </script>
+</body>
+</html>
