@@ -380,6 +380,31 @@ class DAQConfigDialog(QDialog):
             "name": self.name_edit.text()
         }
 
+class XYSelectDialog(QDialog):
+    def __init__(self, parent, channels):
+        super().__init__(parent)
+        self.setWindowTitle("选择 XY 绘图通道")
+        self.setFixedWidth(400)
+        layout = QFormLayout(self)
+        
+        self.x_combo = QComboBox()
+        self.y_combo = QComboBox()
+        
+        for cid, name in channels.items():
+            self.x_combo.addItem(name, cid)
+            self.y_combo.addItem(name, cid)
+            
+        layout.addRow("X 轴通道:", self.x_combo)
+        layout.addRow("Y 轴通道:", self.y_combo)
+        
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addRow(btns)
+
+    def get_selection(self):
+        return self.x_combo.currentData(), self.y_combo.currentData()
+
 class PopOutWindow(QWidget):
     def __init__(self, widget, title, on_close_callback):
         super().__init__()
@@ -516,6 +541,34 @@ class MainWindow(QMainWindow):
             except:
                 QMessageBox.critical(self, "错误", "无法连接服务器停止采集")
 
+    def open_xy_plot_dialog(self):
+        # 收集所有当前已知的通道
+        channels = {}
+        for cid, cfg in self.daq_configs.items():
+            channels[cid] = cfg.get("name", cid)
+        
+        # 如果没有配置，尝试从 tree 中找 (防止初次启动还没拉取配置)
+        if not channels:
+            for i in range(self.sensor_tree.topLevelItemCount()):
+                root = self.sensor_tree.topLevelItem(i)
+                for j in range(root.childCount()):
+                    child = root.child(j)
+                    cid = child.data(0, Qt.UserRole)
+                    if cid:
+                        channels[cid] = child.text(0)
+
+        if not channels:
+            QMessageBox.warning(self, "提醒", "当前没有可用的传感器通道")
+            return
+
+        dlg = XYSelectDialog(self, channels)
+        if dlg.exec() == QDialog.Accepted:
+            x_cid, y_cid = dlg.get_selection()
+            if x_cid == y_cid:
+                QMessageBox.warning(self, "提醒", "请选择两个不同的通道进行 XY 绘图")
+                return
+            self.add_xy_plot_window(x_cid, y_cid)
+
     def save_camera_configs(self):
         try:
             with open("camera_config.json", "w") as f: json.dump(self.camera_configs, f)
@@ -566,9 +619,16 @@ class MainWindow(QMainWindow):
         sensor_card.setFixedWidth(350)
         sc_layout = QVBoxLayout(sensor_card)
         
+        title_layout = QHBoxLayout()
         title = QLabel("传感器通道列表")
         title.setStyleSheet("font-size: 16px; font-weight: bold;")
-        sc_layout.addWidget(title)
+        xy_plot_btn = QPushButton("📈 绘制XY图")
+        xy_plot_btn.setFixedWidth(100)
+        xy_plot_btn.clicked.connect(self.open_xy_plot_dialog)
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+        title_layout.addWidget(xy_plot_btn)
+        sc_layout.addLayout(title_layout)
         
         self.sensor_tree = QTreeWidget(sensor_card)
         self.sensor_tree.setHeaderLabels(["通道名", "实时值", "单位"])
