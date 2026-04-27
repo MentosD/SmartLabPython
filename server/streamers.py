@@ -94,24 +94,34 @@ async def daq_udp_receiver():
         print("🛑 服务器采集引擎已停止")
 
 async def video_streamer(cam_id: int, rtsp_url: str = None):
-    """针对特定通道的视频流采集"""
+    """针对特定通道的视频流采集 (非阻塞版本)"""
     source = rtsp_url if rtsp_url and rtsp_url.strip() else 0
     if source == 0 and cam_id > 0: source = -1
         
-    cap = cv2.VideoCapture(source)
+    loop = asyncio.get_event_loop()
+    # 在执行器中打开捕捉器，防止 RTSP 连接超时阻塞主线程
+    cap = await loop.run_in_executor(None, cv2.VideoCapture, source)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     manager = video_managers[cam_id]
     
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            frame = np.zeros((240, 320, 3), dtype=np.uint8)
-            cv2.putText(frame, f"CAM {cam_id+1} OFFLINE", (50, 120), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
-            await asyncio.sleep(1)
-            if rtsp_url: cap.open(source)
-        else:
-            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            jpg_text = base64.b64encode(buffer).decode('utf-8')
-            await manager.broadcast_text(jpg_text)
-            await asyncio.sleep(0.05)
+    try:
+        while True:
+            # 在线程池中读取帧，防止 OpenCV 阻塞 asyncio 事件循环
+            ret, frame = await loop.run_in_executor(None, cap.read)
+            
+            if not ret:
+                frame = np.zeros((240, 320, 3), dtype=np.uint8)
+                cv2.putText(frame, f"CAM {cam_id+1} OFFLINE", (50, 120), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+                await asyncio.sleep(1)
+                # 尝试重新打开
+                if rtsp_url:
+                    await loop.run_in_executor(None, cap.open, source)
+            else:
+                # 编码也放在线程池，虽然很快但为了极致平滑
+                _, buffer = await loop.run_in_executor(None, lambda: cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50]))
+                jpg_text = base64.b64encode(buffer).decode('utf-8')
+                await manager.broadcast_text(jpg_text)
+                await asyncio.sleep(0.04) # 约 25fps
+    finally:
+        cap.release()

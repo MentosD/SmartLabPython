@@ -27,6 +27,7 @@ daq_task = None
 
 # 路径定义
 DAQ_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "daq_config.json")
+CAM_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "camera_config.json")
 
 def load_daq_config():
     default = {"ip": "0.0.0.0", "port": 19001, "name": "DTLinks-DAQ"}
@@ -34,8 +35,30 @@ def load_daq_config():
         with open(DAQ_CONFIG_PATH, "r") as f: return json.load(f)
     return default
 
-def save_daq_config(config):
-    with open(DAQ_CONFIG_PATH, "w") as f: json.dump(config, f)
+def sync_camera_configs():
+    """将 JSON 里的摄像头配置同步到数据库"""
+    if not os.path.exists(CAM_CONFIG_PATH):
+        return
+    
+    try:
+        with open(CAM_CONFIG_PATH, "r", encoding='utf-8') as f:
+            configs = json.load(f)
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        for c in configs:
+            # 自动生成 RTSP URL
+            rtsp = f"rtsp://{c['username']}:{c['password']}@{c['ip']}:{c['port']}/{c['path'].lstrip('/')}"
+            cursor.execute("""
+                UPDATE cameras SET 
+                name=?, rtsp_url=?, ip=?, port=?, username=?, password=?, onvif_port=?, path=? 
+                WHERE id=?
+            """, (c['name'], rtsp, c['ip'], c['port'], c['username'], c['password'], c['onvif_port'], c['path'], c['id']))
+        conn.commit()
+        conn.close()
+        print("✅ 摄像头配置已从 JSON 同步到数据库")
+    except Exception as e:
+        print(f"❌ 同步摄像头配置失败: {e}")
 
 # 1. 先定义 lifespan 装饰器
 @asynccontextmanager
@@ -43,18 +66,21 @@ async def lifespan(app: FastAPI):
     # 启动时的逻辑
     init_db()
     
-    # 自动启动采集引擎
+    # 同步摄像头和 DAQ 配置
+    sync_camera_configs()
     cfg = load_daq_config()
-    from server.streamers import daq_config, daq_udp_receiver
+    
+    from server.streamers import daq_config, daq_udp_receiver, video_streamer
     daq_config.update(cfg)
     asyncio.create_task(daq_udp_receiver())
     
-    # 从数据库读取摄像头配置并启动抓取器
+    # 启动视频抓取任务
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT id, rtsp_url FROM cameras")
     for cam_id, url in cursor.fetchall():
-        asyncio.create_task(video_streamer(cam_id, url))
+        if url: # 只有配置了 URL 的才启动
+            asyncio.create_task(video_streamer(cam_id, url))
     conn.close()
     yield
 
@@ -96,6 +122,70 @@ async def stop_daq():
     import server.streamers as streamers
     streamers.daq_task_running = False
     return {"success": True}
+
+@app.post("/camera/ptz")
+async def camera_ptz(data: dict):
+    cam_id = data.get("cam_id")
+    cmd = data.get("cmd")
+    is_start = data.get("is_start", True)
+    
+    # 从数据库获取该摄像头的配置信息
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT ip, port, username, password, onvif_port, path FROM cameras WHERE id = ?", (cam_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return {"success": False, "message": "找不到该摄像头配置"}
+    
+    config = {
+        "ip": row[0],
+        "port": row[1],
+        "user": row[2],
+        "pwd": row[3],
+        "onvif_port": row[4] or 80,
+        "path": row[5]
+    }
+
+    # 异步执行 PTZ 控制（防止阻塞 FastAPI 主线程）
+    asyncio.create_task(exec_server_ptz(config, cmd, is_start))
+    return {"success": True}
+
+async def exec_server_ptz(config, cmd, is_start):
+    try:
+        from onvif import ONVIFCamera
+        mycam = ONVIFCamera(config['ip'], int(config['onvif_port']), config['user'], config['pwd'])
+        ptz = mycam.create_ptz_service()
+        media = mycam.create_media_service()
+        profile = media.GetProfiles()[0]
+
+        if not is_start:
+            ptz.Stop({'ProfileToken': profile.token})
+            return
+
+        request = ptz.create_type('ContinuousMove')
+        request.ProfileToken = profile.token
+        
+        status = ptz.GetStatus({'ProfileToken': profile.token})
+        request.Velocity = status.Position
+        
+        vx, vy, vz = 0, 0, 0
+        speed = 0.5
+        if cmd == "up": vy = speed
+        elif cmd == "down": vy = -speed
+        elif cmd == "left": vx = -speed
+        elif cmd == "right": vx = speed
+        elif cmd == "zoom_in": vz = speed
+        elif cmd == "zoom_out": vz = -speed
+
+        request.Velocity.PanTilt.x = vx
+        request.Velocity.PanTilt.y = vy
+        request.Velocity.Zoom.x = vz
+
+        ptz.ContinuousMove(request)
+    except Exception as e:
+        print(f"Server PTZ Error for {config['ip']}: {e}")
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -293,16 +383,25 @@ def import_assets(assets: list[Asset]):
 def get_cameras():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, rtsp_url FROM cameras")
+    cursor.execute("SELECT id, name, rtsp_url, ip, port, username, password, onvif_port, path FROM cameras")
+    cols = [column[0] for column in cursor.description]
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "name": r[1], "rtsp_url": r[2]} for r in rows]
+    return [dict(zip(cols, r)) for r in rows]
 
 @app.post("/cameras/update")
 def update_camera(cam: dict):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("UPDATE cameras SET name=?, rtsp_url=? WHERE id=?", (cam['name'], cam['rtsp_url'], cam['id']))
+    cursor.execute("""
+        UPDATE cameras SET 
+        name=?, rtsp_url=?, ip=?, port=?, username=?, password=?, onvif_port=?, path=? 
+        WHERE id=?
+    """, (
+        cam['name'], cam['rtsp_url'], cam.get('ip', ''), cam.get('port', ''), 
+        cam.get('username', ''), cam.get('password', ''), cam.get('onvif_port', ''), 
+        cam.get('path', ''), cam['id']
+    ))
     conn.commit()
     conn.close()
     return {"status": "success"}

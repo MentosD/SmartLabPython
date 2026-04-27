@@ -47,6 +47,7 @@ more-itertools @ file:///opt/miniconda3/conda-bld/more-itertools_1761121541654/w
 msgpack @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_0d73gp34a_/croot/msgpack-python_1750958625811/work
 numpy==2.4.3
 opencv-python==4.13.0.92
+onvif-zeep
 packaging @ file:///opt/miniconda3/conda-bld/packaging_1761049079023/work
 paho-mqtt==2.1.0
 passlib==1.7.4

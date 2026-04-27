@@ -117,9 +117,30 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cameras (
             id INTEGER PRIMARY KEY,
             name TEXT,
-            rtsp_url TEXT
+            rtsp_url TEXT,
+            ip TEXT,
+            port TEXT,
+            username TEXT,
+            password TEXT,
+            onvif_port TEXT,
+            path TEXT
         )
     ''')
+
+    # 动态检查并补全 cameras 表缺失的列
+    cursor.execute("PRAGMA table_info(cameras)")
+    cam_cols = [col[1] for col in cursor.fetchall()]
+    cam_needed = [
+        ("ip", "TEXT"), ("port", "TEXT"), 
+        ("username", "TEXT"), ("password", "TEXT"), 
+        ("onvif_port", "TEXT"), ("path", "TEXT")
+    ]
+    for col_name, col_type in cam_needed:
+        if col_name not in cam_cols:
+            try:
+                cursor.execute(f"ALTER TABLE cameras ADD COLUMN {col_name} {col_type}")
+                print(f"Migration: Added column {col_name} to cameras table.")
+            except: pass
 
     # 初始化管理员账号 admin / admin123
     cursor.execute("SELECT COUNT(*) FROM users WHERE username='admin'")

@@ -82,19 +82,48 @@ class CamConfigDialog(QDialog):
         self.setWindowTitle(f"配置摄像头 - 通道 {cam_data['id']+1}")
         self.setFixedWidth(450)
         layout = QFormLayout(self)
+        
         self.name_edit = QLineEdit(str(cam_data.get('name', '')))
-        self.url_edit = QLineEdit(str(cam_data.get('rtsp_url', '')))
         self.ip_edit = QLineEdit(str(cam_data.get('ip', '')))
+        self.port_edit = QLineEdit(str(cam_data.get('port', '554')))
+        self.user_edit = QLineEdit(str(cam_data.get('username', 'admin')))
+        self.pwd_edit = QLineEdit(str(cam_data.get('password', '')))
+        self.pwd_edit.setEchoMode(QLineEdit.Password)
+        self.onvif_edit = QLineEdit(str(cam_data.get('onvif_port', '80')))
+        self.path_edit = QLineEdit(str(cam_data.get('path', '')))
+        self.url_edit = QLineEdit(str(cam_data.get('rtsp_url', '')))
+        
         layout.addRow("显示名称:", self.name_edit)
-        layout.addRow("RTSP URL:", self.url_edit)
         layout.addRow("设备 IP:", self.ip_edit)
+        layout.addRow("RTSP 端口:", self.port_edit)
+        layout.addRow("用户名:", self.user_edit)
+        layout.addRow("密码:", self.pwd_edit)
+        layout.addRow("ONVIF 端口:", self.onvif_edit)
+        layout.addRow("流路径:", self.path_edit)
+        layout.addRow("手动 RTSP URL (可选):", self.url_edit)
+        
         btns = QHBoxLayout()
         save_btn = QPushButton("保存"); save_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("取消"); cancel_btn.clicked.connect(self.reject)
         btns.addWidget(save_btn); btns.addWidget(cancel_btn)
         layout.addRow(btns)
+
     def get_result(self):
-        return {"name": self.name_edit.text(), "rtsp_url": self.url_edit.text(), "ip": self.ip_edit.text()}
+        # 如果手动 URL 为空，则根据 IP 等信息生成一个
+        rtsp = self.url_edit.text().strip()
+        if not rtsp and self.ip_edit.text().strip():
+            rtsp = f"rtsp://{self.user_edit.text()}:{self.pwd_edit.text()}@{self.ip_edit.text()}:{self.port_edit.text()}/{self.path_edit.text().lstrip('/')}"
+        
+        return {
+            "name": self.name_edit.text(),
+            "rtsp_url": rtsp,
+            "ip": self.ip_edit.text(),
+            "port": self.port_edit.text(),
+            "username": self.user_edit.text(),
+            "password": self.pwd_edit.text(),
+            "onvif_port": self.onvif_edit.text(),
+            "path": self.path_edit.text()
+        }
 
 class LoginDialog(QDialog):
     def __init__(self):
@@ -449,24 +478,29 @@ class MainWindow(QMainWindow):
         self.daq_bridge = None
         self.daq_bridge_config = {"ip": "0.0.0.0", "port": 19001, "name": "DTLinks-DAQ"}
         self.video_workers = [VideoWorker(camera_id=i) for i in range(4)]
-        self.camera_configs = self.load_camera_configs()
+        self.camera_configs = {}
         
         self.setup_ui(); self.connect_signals()
         self.mqtt_worker.start()
         
-        # 加载初始摄像头 URL
-        for i, config in self.camera_configs.items():
-            idx = int(i)
-            if idx < 4:
-                url = f"rtsp://{config['user']}:{config['pwd']}@{config['ip']}:{config['port']}/{config['path']}"
-                self.video_workers[idx].set_source(url)
+        # 延迟 1 秒获取所有配置，确保网络环境就绪
+        QTimer.singleShot(1000, self.fetch_daq_configs)
+        QTimer.singleShot(1200, self.fetch_camera_configs)
 
-    def load_camera_configs(self):
+    def fetch_camera_configs(self):
         try:
-            if os.path.exists("camera_config.json"):
-                with open("camera_config.json", "r") as f: return json.load(f)
-        except: pass
-        return {}
+            res = requests.get(f"{SERVER_URL}/cameras")
+            if res.status_code == 200:
+                rows = res.json()
+                for r in rows:
+                    idx = r['id']
+                    self.camera_configs[str(idx)] = r
+                    # 启动视频工作线程
+                    if r.get('rtsp_url'):
+                        self.video_workers[idx].set_source(r['rtsp_url'])
+                        self.video_workers[idx].start()
+        except Exception as e:
+            print(f"Error fetching camera configs: {e}")
 
     def fetch_daq_configs(self):
         try:
@@ -494,16 +528,29 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.Accepted:
             data = dlg.get_data()
             if data:
+                # 1. 立即更新本地内存缓存，确保 UI 刷新无延迟
+                self.daq_configs[channel_id] = data
+                
+                # 2. 找到 tree 中的对应项，立即手动修改其显示文本 (标签化刷新)
+                for i in range(self.sensor_tree.topLevelItemCount()):
+                    root = self.sensor_tree.topLevelItem(i)
+                    for j in range(root.childCount()):
+                        child = root.child(j)
+                        if child.data(0, Qt.UserRole) == channel_id:
+                            child.setText(0, data.get("name", channel_id))
+                            break
+
+                # 3. 异步推送到服务器进行持久化
                 try:
                     res = requests.post(f"{SERVER_URL}/daq/config/update", json={
                         "channel_id": channel_id,
                         **data
                     })
-                    if res.status_code == 200:
-                        QMessageBox.information(self, "成功", f"通道 {channel_id} 配置已同步到服务器")
-                        self.fetch_daq_configs() # 刷新本地配置
-                except:
-                    QMessageBox.warning(self, "错误", "无法连接到服务器进行同步")
+                    if res.status_code != 200:
+                        print(f"Server sync warning: {res.text}")
+                except Exception as e:
+                    print(f"Server sync error: {e}")
+                    QMessageBox.warning(self, "同步提醒", "本地修改成功，但无法同步到服务器，重启后可能丢失。")
 
     def manage_daq_bridge(self):
         # 先获取服务器上的当前状态
@@ -542,23 +589,23 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "错误", "无法连接服务器停止采集")
 
     def open_xy_plot_dialog(self):
-        # 收集所有当前已知的通道
+        # 收集所有当前已知的通道，确保使用最新的显示名称
         channels = {}
-        for cid, cfg in self.daq_configs.items():
-            channels[cid] = cfg.get("name", cid)
         
-        # 如果没有配置，尝试从 tree 中找 (防止初次启动还没拉取配置)
-        if not channels:
-            for i in range(self.sensor_tree.topLevelItemCount()):
-                root = self.sensor_tree.topLevelItem(i)
-                for j in range(root.childCount()):
-                    child = root.child(j)
-                    cid = child.data(0, Qt.UserRole)
-                    if cid:
-                        channels[cid] = child.text(0)
+        # 1. 优先从 tree 结构中扫描，因为这里反映了当前在线的传感器
+        for i in range(self.sensor_tree.topLevelItemCount()):
+            root = self.sensor_tree.topLevelItem(i)
+            for j in range(root.childCount()):
+                child = root.child(j)
+                cid = child.data(0, Qt.UserRole) # 这是唯一的 Channel ID
+                if cid:
+                    # 获取该通道的最新显示名称：优先看 daq_configs，没有则用 tree 上的文本
+                    cfg = self.daq_configs.get(cid, {})
+                    display_name = cfg.get("name", child.text(0))
+                    channels[cid] = f"{display_name} ({cid})"
 
         if not channels:
-            QMessageBox.warning(self, "提醒", "当前没有可用的传感器通道")
+            QMessageBox.warning(self, "提醒", "当前没有在线的传感器通道，请先确保服务器已开始采集")
             return
 
         dlg = XYSelectDialog(self, channels)
@@ -676,8 +723,8 @@ class MainWindow(QMainWindow):
             h.addLayout(ptz_layout)
             
             h.addStretch()
-            btn = QPushButton("⚙️"); btn.setFixedSize(24, 24)
-            btn.clicked.connect(lambda *args, idx=i: self.configure_camera(idx)); h.addWidget(btn); v.addLayout(h)
+            # 移除设置按钮，因为所有配置现在由服务器端 JSON 管理
+            v.addLayout(h)
             lbl = QLabel("NO SIGNAL"); lbl.setAlignment(Qt.AlignCenter); lbl.setStyleSheet("color: #566573; font-size: 18px;"); v.addWidget(lbl)
             self.video_containers.append(c); self.video_labels.append(lbl)
         vc_layout.addWidget(self.video_grid_widget)
@@ -979,64 +1026,40 @@ class MainWindow(QMainWindow):
 
     def configure_camera(self, idx):
         initial = self.camera_configs.get(str(idx), {})
-        dlg = CameraDialog(self, initial)
+        initial['id'] = idx # 确保对话框知道是哪个通道
+        dlg = CamConfigDialog(initial, self)
         if dlg.exec() == QDialog.Accepted:
-            data = dlg.get_data()
-            self.camera_configs[str(idx)] = data
-            self.save_camera_configs()
-            
-            # 重新生成 RTSP URL 并重新连接
-            url = f"rtsp://{data['user']}:{data['pwd']}@{data['ip']}:{data['port']}/{data['path']}"
-            self.video_workers[idx].stop()
-            self.video_workers[idx].set_source(url)
-            self.video_workers[idx].start()
-            QMessageBox.information(self, "设置成功", f"CAM-{idx+1} 配置已更新")
+            data = dlg.get_result()
+            data['id'] = idx
 
+            try:
+                # 同步到服务器
+                res = requests.post(f"{SERVER_URL}/cameras/update", json=data)
+                if res.status_code == 200:
+                    self.camera_configs[str(idx)] = data
+                    QMessageBox.information(self, "设置成功", f"CAM-{idx+1} 配置已更新并同步到服务器")
+                    # 重新启动视频流 (由于 RTSP 已经在 get_result 中生成)
+                    self.video_workers[idx].stop()
+                    self.video_workers[idx].start()
+                else:
+                    QMessageBox.warning(self, "同步失败", f"服务器返回错误: {res.text}")
+            except Exception as e:
+                QMessageBox.critical(self, "网络错误", f"无法同步配置到服务器: {e}")
     def ptz_control(self, idx, cmd, is_start):
-        """控制摄像头 PTZ"""
-        config = self.camera_configs.get(str(idx))
-        if not config: return
-        
-        # 为了防止界面卡顿，PTZ 操作应在后台执行
-        threading.Thread(target=self._exec_ptz, args=(config, cmd, is_start), daemon=True).start()
+        """控制摄像头 PTZ - 转发给服务器执行"""
+        payload = {
+            "cam_id": idx,
+            "cmd": cmd,
+            "is_start": is_start
+        }
+        # 异步发送请求，避免 UI 卡顿
+        threading.Thread(target=self._send_ptz_request, args=(payload,), daemon=True).start()
 
-    def _exec_ptz(self, config, cmd, is_start):
+    def _send_ptz_request(self, payload):
         try:
-            from onvif import ONVIFCamera
-            # 兼容性处理：如果配置中没有 onvif_port，则默认使用 80
-            onvif_port = int(config.get('onvif_port', 80))
-            mycam = ONVIFCamera(config['ip'], onvif_port, config['user'], config['pwd'])
-            ptz = mycam.create_ptz_service()
-            media = mycam.create_media_service()
-            profile = media.GetProfiles()[0]
-            
-            request = ptz.create_type('ContinuousMove')
-            request.ProfileToken = profile.token
-            
-            if not is_start:
-                ptz.Stop({'ProfileToken': profile.token})
-                return
-
-            status = ptz.GetStatus({'ProfileToken': profile.token})
-            request.Velocity = status.Position # 默认速度
-            
-            # 设定速度向量 (x: pan, y: tilt, z: zoom)
-            vx, vy, vz = 0, 0, 0
-            speed = 0.5
-            if cmd == "up": vy = speed
-            elif cmd == "down": vy = -speed
-            elif cmd == "left": vx = -speed
-            elif cmd == "right": vx = speed
-            elif cmd == "zoom_in": vz = speed
-            elif cmd == "zoom_out": vz = -speed
-            
-            request.Velocity.PanTilt.x = vx
-            request.Velocity.PanTilt.y = vy
-            request.Velocity.Zoom.x = vz
-            
-            ptz.ContinuousMove(request)
+            requests.post(f"{SERVER_URL}/camera/ptz", json=payload, timeout=2)
         except Exception as e:
-            print(f"PTZ Error: {e}")
+            print(f"PTZ Server Request Error: {e}")
 
     def connect_signals(self):
         self.mqtt_worker.data_received.connect(self.process_sensor_data)
@@ -1093,7 +1116,9 @@ class MainWindow(QMainWindow):
             for cn, v in s["channels"].items():
                 channel_id = f"{sn}_{cn}"
                 cfg = self.daq_configs.get(channel_id, {})
-                display_name = cfg.get("name", cn)
+                
+                # 核心修复：优先使用内存中用户定义的标签，而不是数据包带的 cn
+                display_name = cfg.get("name") if cfg.get("name") else cn
                 unit = cfg.get("unit", "-")
                 scale = cfg.get("scale", 1.0)
                 offset = cfg.get("offset", 0.0)
