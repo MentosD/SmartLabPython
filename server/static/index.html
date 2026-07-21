@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>智慧实验室 - 移动端远程监看大屏</title>
+    <!-- Google Fonts & ECharts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --primary: #38bdf8;
+            --primary-glow: rgba(56, 189, 248, 0.3);
+            --accent: #818cf8;
+            --text-main: #f8fafc;
+            --text-sub: #94a3b8;
+            --success: #34d399;
+            --danger: #f87171;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            padding-bottom: 24px;
+            overflow-x: hidden;
+        }
+
+        /* 顶部导航栏 */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 14px 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--success);
+            box-shadow: 0 0 10px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        h1 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header-status {
+            font-size: 0.8rem;
+            color: var(--text-sub);
+            background: rgba(255, 255, 255, 0.05);
+            padding: 4px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+        }
+
+        /* 主容器 */
+        main {
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        /* 模块标题 */
+        .section-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-sub);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 14px;
+            background: var(--primary);
+            border-radius: 2px;
+        }
+
+        /* 视频监控网格 */
+        .video-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        @media (max-width: 480px) {
+            .video-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .video-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+            aspect-ratio: 4/3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .video-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .video-tag {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            color: #fff;
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        /* 数采指标卡片 */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .metric-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 40px;
+            height: 40px;
+            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);
+        }
+
+        .metric-label {
+            font-size: 0.8rem;
+            color: var(--text-sub);
+        }
+
+        .metric-value {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: var(--primary);
+            font-family: monospace;
+        }
+
+        .metric-unit {
+            font-size: 0.75rem;
+            color: var(--text-sub);
+            margin-left: 4px;
+        }
+
+        /* 实时波形图表卡片 */
+        .chart-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .chart-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 240px;
+        }
+
+        /* 底部辅助面板 */
+        .info-card {
+            background: rgba(30, 41, 59, 0.4);
+            border: 1px dashed var(--border-color);
+            border-radius: 12px;
+            padding: 12px 16px;
+            font-size: 0.8rem;
+            color: var(--text-sub);
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-group">
+            <div class="status-dot" id="status-dot"></div>
+            <h1>Smart Lab 远程监看</h1>
+        </div>
+        <div class="header-status" id="net-status">连接中...</div>
+    </header>
+
+    <main>
+        <!-- 视频监控区域 -->
+        <div class="section-title">实验室监控画面 (4路)</div>
+        <div class="video-grid">
+            <div class="video-card">
+                <span class="video-tag">CH 1: 实验区-主控</span>
+                <img id="video-0" src="" alt="CH1 画面连接中...">
+            </div>
+            <div class="video-card">
+                <span class="video-tag">CH 2: 实验区-侧向</span>
+                <img id="video-1" src="" alt="CH2 画面连接中...">
+            </div>
+            <div class="video-card">
+                <span class="video-tag">CH 3: 加载架-细部</span>
+                <img id="video-2" src="" alt="CH3 画面连接中...">
+            </div>
+            <div class="video-card">
+                <span class="video-tag">CH 4: 实验室-全景</span>
+                <img id="video-3" src="" alt="CH4 画面连接中...">
+            </div>
+        </div>
+
+        <!-- 关键数值概览 -->
+        <div class="section-title">核心采样指标 (真实数据)</div>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">NI 9201 - CH1</div>
+                <div><span class="metric-value" id="val-ni1">0.00</span><span class="metric-unit">V</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">NI 9201 - CH2</div>
+                <div><span class="metric-value" id="val-ni2">0.00</span><span class="metric-unit">V</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">NI 9201 - CH3</div>
+                <div><span class="metric-value" id="val-ni3">0.00</span><span class="metric-unit">V</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">NI 9201 - CH4</div>
+                <div><span class="metric-value" id="val-ni4">0.00</span><span class="metric-unit">V</span></div>
+            </div>
+        </div>
+
+        <!-- 实时动态时程曲线 -->
+        <div class="section-title">实时硬件波形 (1kHz 数据流)</div>
+        <div class="chart-card">
+            <div class="chart-header">
+                <div class="chart-title">NI 9201 模拟量波形 (真实通道 CH1~CH4)</div>
+            </div>
+            <div id="ni-chart" class="chart-container"></div>
+        </div>
+
+        <!-- 说明信息 -->
+        <div class="info-card">
+            📌 提示：目前数据为来自 NI-DAQmx 的真实硬件数据流。手机与实验室主机处在同一局域网即可流畅实时监看。
+        </div>
+    </main>
+
+    <script>
+        // 1. 初始化 WebSocket 视频流
+        const host = window.location.host;
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+        for (let i = 0; i < 4; i++) {
+            const img = document.getElementById(`video-${i}`);
+            const wsUrl = `${protocol}//${host}/ws/video/${i}`;
+            const ws = new WebSocket(wsUrl);
+
+            ws.onmessage = (event) => {
+                img.src = `data:image/jpeg;base64,${event.data}`;
+            };
+            ws.onerror = () => {
+                img.alt = `CH${i+1} 暂未连接`;
+            };
+        }
+
+        // 2. 初始化 ECharts 实时波形
+        const chartDom = document.getElementById('ni-chart');
+        const myChart = echarts.init(chartDom, 'dark');
+
+        const maxPoints = 200;
+        let xData = Array.from({length: maxPoints}, (_, i) => i);
+        let ch1Data = new Array(maxPoints).fill(0);
+        let ch2Data = new Array(maxPoints).fill(0);
+        let ch3Data = new Array(maxPoints).fill(0);
+        let ch4Data = new Array(maxPoints).fill(0);
+
+        const option = {
+            backgroundColor: 'transparent',
+            tooltip: { trigger: 'axis' },
+            legend: { data: ['NI_CH1', 'NI_CH2', 'NI_CH3', 'NI_CH4'], top: 0, textStyle: { color: '#94a3b8' } },
+            grid: { left: '3%', right: '4%', bottom: '3%', top: '15%', containLabel: true },
+            xAxis: { type: 'category', data: xData, show: false },
+            yAxis: { type: 'value', min: -10, max: 10, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+            series: [
+                { name: 'NI_CH1', type: 'line', showSymbol: false, data: ch1Data, itemStyle: { color: '#38bdf8' } },
+                { name: 'NI_CH2', type: 'line', showSymbol: false, data: ch2Data, itemStyle: { color: '#818cf8' } },
+                { name: 'NI_CH3', type: 'line', showSymbol: false, data: ch3Data, itemStyle: { color: '#34d399' } },
+                { name: 'NI_CH4', type: 'line', showSymbol: false, data: ch4Data, itemStyle: { color: '#fbbf24' } }
+            ]
+        };
+        myChart.setOption(option);
+
+        // 3. 连接后端真实 WebSocket 数据流 (/ws/data)
+        let pointCounter = maxPoints;
+
+        function connectDataWebSocket() {
+            const dataWsUrl = `${protocol}//${host}/ws/data`;
+            const dataWs = new WebSocket(dataWsUrl);
+
+            dataWs.onopen = () => {
+                document.getElementById('net-status').innerText = '已连接真实硬件 (1kHz)';
+                document.getElementById('status-dot').style.backgroundColor = '#34d399';
+            };
+
+            dataWs.onmessage = (event) => {
+                try {
+                    const payload = JSON.parse(event.data);
+                    if (!payload.sensors || payload.sensors.length === 0) return;
+
+                    const sensor = payload.sensors[0];
+                    const channels = sensor.channels || {};
+
+                    // 获取 NI 通道的最新采样点 (取点或批次最新的值)
+                    const c1 = channels["NI_CH1"] ? channels["NI_CH1"][channels["NI_CH1"].length - 1] : null;
+                    const c2 = channels["NI_CH2"] ? channels["NI_CH2"][channels["NI_CH2"].length - 1] : null;
+                    const c3 = channels["NI_CH3"] ? channels["NI_CH3"][channels["NI_CH3"].length - 1] : null;
+                    const c4 = channels["NI_CH4"] ? channels["NI_CH4"][channels["NI_CH4"].length - 1] : null;
+
+                    if (c1 !== null) {
+                        document.getElementById('val-ni1').innerText = c1.toFixed(2);
+                        ch1Data.shift(); ch1Data.push(c1);
+                    }
+                    if (c2 !== null) {
+                        document.getElementById('val-ni2').innerText = c2.toFixed(2);
+                        ch2Data.shift(); ch2Data.push(c2);
+                    }
+                    if (c3 !== null) {
+                        document.getElementById('val-ni3').innerText = c3.toFixed(2);
+                        ch3Data.shift(); ch3Data.push(c3);
+                    }
+                    if (c4 !== null) {
+                        document.getElementById('val-ni4').innerText = c4.toFixed(2);
+                        ch4Data.shift(); ch4Data.push(c4);
+                    }
+
+                    pointCounter++;
+                    xData.shift(); xData.push(pointCounter);
+
+                    myChart.setOption({
+                        xAxis: { data: xData },
+                        series: [
+                            { data: ch1Data },
+                            { data: ch2Data },
+                            { data: ch3Data },
+                            { data: ch4Data }
+                        ]
+                    });
+
+                } catch (e) {
+                    console.error("Data parse error:", e);
+                }
+            };
+
+            dataWs.onclose = () => {
+                document.getElementById('net-status').innerText = '数据流断开，正在重连...';
+                document.getElementById('status-dot').style.backgroundColor = '#f87171';
+                setTimeout(connectDataWebSocket, 2000);
+            };
+        }
+
+        // 启动真实 WebSocket 数据流连接
+        connectDataWebSocket();
+
+        window.addEventListener('resize', () => myChart.resize());
+    </script>
+</body>
+</html>

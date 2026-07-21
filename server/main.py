@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
@@ -71,8 +72,10 @@ async def lifespan(app: FastAPI):
     cfg = load_daq_config()
     
     from server.streamers import daq_config, daq_udp_receiver, video_streamer
+    from server.ni_daq import ni_daq_receiver
     daq_config.update(cfg)
     asyncio.create_task(daq_udp_receiver())
+    asyncio.create_task(ni_daq_receiver())
     
     # 启动视频抓取任务
     conn = sqlite3.connect(DB_PATH)
@@ -95,6 +98,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载移动端 HTML 页面
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+@app.get("/")
+def get_mobile_dashboard():
+    """返回手机与 Web 远程监看大屏"""
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Smart Lab API Server Running"}
 
 @app.get("/daq/status")
 def get_daq_status():
@@ -122,6 +138,36 @@ async def stop_daq():
     import server.streamers as streamers
     streamers.daq_task_running = False
     return {"success": True}
+
+# NI DAQ 接口
+@app.get("/ni/devices")
+def get_ni_devices():
+    from server.ni_daq import scan_ni_devices
+    return scan_ni_devices()
+
+@app.get("/ni/status")
+def get_ni_status():
+    from server.ni_daq import ni_task_running, ni_config
+    return {"running": ni_task_running, "config": ni_config}
+
+@app.post("/ni/config")
+def update_ni_config(cfg: dict):
+    from server.ni_daq import ni_config
+    ni_config.update(cfg)
+    return {"success": True, "config": ni_config}
+
+@app.post("/ni/ao/write")
+def write_ni_output(data: dict):
+    from server.ni_daq import write_ni_ao
+    channel = data.get("channel", "cDAQ1Mod2/ao0")
+    voltage = data.get("voltage", 0.0)
+    return write_ni_ao(channel, voltage)
+
+@app.post("/ni/reset")
+def reset_ni_dev(data: dict = {}):
+    from server.ni_daq import reset_ni_device
+    dev_name = data.get("device_name", "cDAQ1Mod1")
+    return reset_ni_device(dev_name)
 
 @app.post("/camera/ptz")
 async def camera_ptz(data: dict):
@@ -415,6 +461,15 @@ async def video_endpoint(websocket: WebSocket, cam_id: int):
         while True: await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.websocket("/ws/data")
+async def data_endpoint(websocket: WebSocket):
+    from server.managers import data_manager
+    await data_manager.connect(websocket)
+    try:
+        while True: await websocket.receive_text()
+    except WebSocketDisconnect:
+        data_manager.disconnect(websocket)
 
 NAS_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads", "nas")
 os.makedirs(NAS_DIR, exist_ok=True)

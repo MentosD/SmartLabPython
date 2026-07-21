@@ -13,14 +13,16 @@ class VideoManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast_text(self, message: str):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
             except:
-                pass
+                self.disconnect(connection)
 
-# 创建4个视频管理器实例
+# 创建4个视频管理器实例 + 1个数据流管理器实例
 video_managers = [VideoManager() for _ in range(4)]
+data_manager = VideoManager()

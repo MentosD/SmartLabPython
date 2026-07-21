@@ -43,7 +43,8 @@ QComboBox { padding: 5px; border: 1px solid #D5DBDB; border-radius: 4px; min-wid
 """
 
 class VideoWorker(QThread):
-    frame_received = Signal(int, QImage)
+    frame_received = Signal(QImage)
+    status_changed = Signal(str)
     def __init__(self, cam_id):
         super().__init__()
         self.cam_id = cam_id
@@ -57,6 +58,7 @@ class VideoWorker(QThread):
         async def listen():
             try:
                 async with websockets.connect(ws_url) as websocket:
+                    self.status_changed.emit("已连接视频流")
                     while self.running:
                         try:
                             data = await websocket.recv()
@@ -64,15 +66,19 @@ class VideoWorker(QThread):
                             nparr = np.frombuffer(img_data, np.uint8)
                             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                             if frame is not None:
+                                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                                 h, w, ch = frame.shape
-                                img = QImage(frame.data, w, h, ch * w, QImage.Format_BGR888)
-                                self.frame_received.emit(self.cam_id, img.copy())
-                        except: await asyncio.sleep(0.1)
-            except: pass
+                                img = QImage(frame.data, w, h, ch * w, QImage.Format_RGB888)
+                                self.frame_received.emit(img.copy())
+                        except: await asyncio.sleep(0.04)
+            except: 
+                self.status_changed.emit("视频流未连接")
         try: loop.run_until_complete(listen())
         except: pass
 
     def stop(self):
+        self.running = False
+        self.wait()
         self.running = False
         self.wait()
 
@@ -466,7 +472,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Smart Lab - {user_info['username']} ({'管理员' if user_info['role']=='admin' else '普通用户'})")
         self.resize(1600, 1000); self.setStyleSheet(STYLE_SHEET)
         self.plot_mode, self.current_plot_target, self.plot_x_target, self.plot_y_target = "time", None, None, None
-        self.units_map, self.data_history = {}, {}
+        self.units_map, self.data_history, self.total_points = {}, {}, {}
         self.daq_configs = {} # 通道配置缓存
         # 延迟 1 秒获取配置，确保网络环境就绪
         QTimer.singleShot(1000, self.fetch_daq_configs)
@@ -618,7 +624,8 @@ class MainWindow(QMainWindow):
 
     def save_camera_configs(self):
         try:
-            with open("camera_config.json", "w") as f: json.dump(self.camera_configs, f)
+            cam_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server", "camera_config.json")
+            with open(cam_path, "w", encoding="utf-8") as f: json.dump(self.camera_configs, f, ensure_ascii=False, indent=4)
         except: pass
 
     def setup_ui(self):
@@ -1127,12 +1134,15 @@ class MainWindow(QMainWindow):
                 vals = v if isinstance(v, list) else [v]
                 processed_vals = [val * scale + offset for val in vals]
                 
-                if channel_id not in self.data_history: self.data_history[channel_id] = []
+                if channel_id not in self.data_history: 
+                    self.data_history[channel_id] = []
+                    self.total_points[channel_id] = 0
                 self.data_history[channel_id].extend(processed_vals)
+                self.total_points[channel_id] += len(processed_vals)
                 
-                # 1kHz 采样率下，保留 2000 个点 (2秒数据)
-                if len(self.data_history[channel_id]) > 2000:
-                    self.data_history[channel_id] = self.data_history[channel_id][-2000:]
+                # 保留最近 5000 个点 (约 5秒 1kHz 数据)
+                if len(self.data_history[channel_id]) > 5000:
+                    self.data_history[channel_id] = self.data_history[channel_id][-5000:]
                 
                 # 更新树状列表显示 (只显示最新的一个点)
                 last_val = processed_vals[-1]
@@ -1159,10 +1169,11 @@ class MainWindow(QMainWindow):
             else:
                 y_data = self.data_history.get(pid, [])
                 if y_data:
-                    # 时程图显示最后 500 个点
+                    # 时程图显示最后 500 个点，X 轴采用连续累计推进的点序号
                     display_len = min(len(y_data), 500)
+                    total_pts = self.total_points.get(pid, len(y_data))
                     plot_y = y_data[-display_len:]
-                    plot_x = list(range(len(plot_y)))
+                    plot_x = list(range(total_pts - display_len, total_pts))
                     info["curve"].setData(plot_x, plot_y)
     def closeEvent(self, e):
         for w in self.video_workers: w.stop()

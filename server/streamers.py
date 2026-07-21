@@ -115,7 +115,7 @@ async def video_streamer(cam_id: int, rtsp_url: str = None):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
                 await asyncio.sleep(1)
                 # 尝试重新打开
-                if rtsp_url:
+                if rtsp_url and rtsp_url.strip():
                     await loop.run_in_executor(None, cap.open, source)
             else:
                 # 编码也放在线程池，虽然很快但为了极致平滑
